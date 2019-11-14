@@ -1,4 +1,4 @@
-# Concurrent Queue
+# Concurrent Queue Model
 
 This is an implementation of an queue datastructure as a model tested with an producer-consumer workload. It is written in [Promela for the Spin model checker](http://spinroot.com/spin/Man/promela.html). The queue is based on a standard FIFO queue represented with a fixed maximum number of items. This limitation is given, because it is not possible to model dynamic memory in Promela in a simple way. Critical sections are used for the enqueuing and dequeuing operations, which can be enabled with a preprocessor switch `ENABLE_CRITICAL_SECTION`. The algorithm to create mutual exclusion for the critical section is [Dekker's algorithm](https://en.wikipedia.org/wiki/Dekker%27s_algorithm)
 
