@@ -1,0 +1,231 @@
+\documentclass{article}
+\usepackage{listings}
+
+\title{Concurrent Queue Model}
+\author{Christian M\"osl \\
+        01523736
+        University of Salzburg}
+\date{November 13, 2019}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+Basically, every modern computer has a processor with multiple cores, and therefore concurrent data structures are getting more important. In this project, I implement a concurrent FIFO queue as a model in Promela for the Spin model checker. This model will be verified for the following properties:
+
+\begin{itemize}
+    \item Every item which is enqueued, will get eventually dequeued
+    \item FIFO order is preserved
+\end{itemize}
+
+The first step will be a naive implementation of a queue, where a producer process and a consumer process interact with the queue. 
+This will be the basic setup for which the Spin model checker will generate counter examples for both properties, because both processes can freely access the head/tail pointer of the queue. 
+Afterwards I will enhance the enqueue and dequeue operations by using a simple mutual exlusion algorithm.
+
+\section{A Queue In Promela}
+Promela has obvously a very different execution model, than classic imperativ programming languages. 
+So at first seight i was not sure how to implement a dynamic data structure without dynamic memory allocation. 
+That lead me to represent the head and tail pointer of a queue as indices into an preallocated array.
+So I decided to predefine a maximum number of items, which will fit into the queue and therefore preallocate memory for it:
+
+\begin{lstlisting}[language=Promela]
+#define number_of_items 10
+#define nothing (number_of_items + 2)
+
+int head = nothing;
+int tail = nothing;
+
+typedef item {
+  int next;
+  int data;
+};
+
+item memory[nothing + 1];
+\end{lstlisting}
+
+I have made access to $memory[nothing]$ valid on purpose because unallowed memory access should not stop Spin from generating a counterexample, which contradicts the queue properties.
+Surprisingly Promela also does not have a concept of a function.
+However, inline macros did the trick to define the queue operations in a clean way.
+
+\begin{lstlisting}[language=Promela]
+inline enqueue(address) {
+  if 
+  :: tail != nothing -> 
+    memory[tail].next = address; 
+  :: else
+  fi;
+
+  tail = address;
+
+  if 
+  :: head == nothing -> head = address;
+  :: else
+  fi
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Promela]
+inline dequeue(address) {
+  address = head;
+
+  head = memory[address].next;
+
+  if 
+  :: head == nothing -> tail = nothing
+  :: else
+  fi
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Promela]
+#define is_empty() (head == nothing)
+\end{lstlisting}
+
+Something worth mentioning is the address parameter. It is a reference to the item in the memory array (the index) and is used as an input parameter in enqueue as well as an output parameter in dequeue.
+And that is it for the naive queue implementation. We could have now created one single process and successfully insert/remove items from the queue without errors. Nevertheless, we want to test the queue in a parallel setting.
+
+\section{Producer-Consumer Workload}
+
+The workload consists of 1 producer and 1 consumer process, who are allowed to access the queue.
+The task of the $produce()$ process is to enqueue all items in the memory in the correct order. 
+First, the item's data value has to be initialized with the numbers from 0 to $number\_of\_items - 1$, which also represents the enqueue order.
+
+\begin{lstlisting}[language=Promela]
+init {
+  int i;
+  for (i : 0 .. number_of_items - 1) {
+    memory[i].next = nothing;
+    memory[i].data = i;
+  }
+  atomic {
+    run produce();
+    run consume()
+  }
+}
+\end{lstlisting}
+
+Implementing the $produce()$ process was kind of easy, as long as it is clear, that the process will stay in an valid end state. 
+Because this is necassery for correctness in Promela.
+This will be garantued by the $break$ statement, where the control flow jumps out of the loop.
+
+\begin{lstlisting}[language=Promela]
+proctype produce() {
+  do
+  :: enqueued < number_of_items -> 
+    enqueue(enqueued);
+    enqueued++
+
+  :: else -> 
+    producer_finished = true;
+    break
+  od
+}
+\end{lstlisting}
+
+The same garantue has to be valid for the $consume()$ process, who has to be in an valid end state at the end.
+
+\begin{lstlisting}[language=Promela]
+proctype consume() {
+  do
+  :: is_empty() && producer_finished ->
+    break
+
+  :: !is_empty() ->
+    int address;
+    dequeue(address);
+    dequeued++;
+  od
+}
+\end{lstlisting}
+
+
+\section{Verifying The Queue}
+
+Now to verify the model and ensure a proper functioning queue I will formulate 2 properties in LTL. Spin will automatically negate these properties and generate the corresponding B\"uchi automaton. 
+
+\begin{itemize}
+  \item Ensure that at some point, the number of enqueued items is equal to the number of dequeued items. ($dequeued$ counts the number of already dequeued items, whereas $number_of_items$ the total amount of items is)
+  \begin{lstlisting}[language=Promela]
+  ltl no_item_lost { 
+    eventually (dequeued == number_of_items) 
+  } 
+  \end{lstlisting}
+  \item At any point, the most recent dequeued item has to has a greater value than the one before that. (both variables get updated after every dequeue in an atomic block)
+  \begin{lstlisting}[language=Promela]
+  ltl order_preserved { 
+    always (dequeued_prev == dequeued_prev_prev + 1) 
+  }
+  \end{lstlisting}
+\end{itemize}
+
+Once this properties are set, Spin can generate execution path examples, where the queue fails to hold these properties.
+
+\begin{verbatim}
+$ spin -run -ltl no_item_lost queue.pml && spin -p -t queue.pml
+...
+pan: ltl formula no_item_lost
+pan:1: acceptance cycle (at depth 481)
+pan: wrote queue.pml.trail
+...
+477: proc 2 terminates
+479: proc 1 terminates
+481: proc 0 terminates
+...
+head = 12
+tail = 12
+enqueued = 10
+dequeued = 9
+\end{verbatim}
+
+This execution path is a perfect counter example, where all 3 processes $ini$/$produce$/$consume$ have successfully excited and even $head$ and $tail$ show that there is no item left in the queue.
+But still there has been one item less dequeued than there has been ennqueued. 
+That proves that there exists an interleaving of programming statements for these processes, which leads to this invalid state. 
+However there exists a rather old and simple solution from a Dutch mathematican Theodorus J. Dekker how came up with the first correct solution for the mutual exclusion problem in concurrent programming.
+
+\section{Mutual Exclusion}
+Dekker's algorithm ensures that only one process enters a critical section at the same time (mutual exclusion) and guarantees freedom from deadlock and starvation. 
+I will present a slightly modified version of this algorithm.
+
+\begin{lstlisting}[language=Promela]
+byte producer = 0;
+byte consumer = 1;
+
+bool wants_to_enter[2];
+byte turn = producer;
+\end{lstlisting}
+
+\begin{lstlisting}[language=Promela]
+inline enter_critical_section(caller) {
+  byte other;
+  if
+  :: caller == producer -> other = consumer
+  :: caller == consumer -> other = producer
+  fi
+
+  wants_to_enter[caller] = true;
+  turn = other;
+  !wants_to_enter[other] || (turn == caller);
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Promela]
+inline leave_critical_section(caller) {
+  wants_to_enter[caller] = false;
+}
+\end{lstlisting}
+
+The next step is to ensure that the critical section is entered before executing $enqueue()$/$dequeue()$ and left afterwards. 
+Furthermore, as expected, the queue model now satisfies both properties. Spin can not find a counterexample. 
+At this point, someone could also try to increase the total number of items. 
+This is especially interesting from a performance point of view because it increases the state space dramatically and slows done the verification process by a lot.
+
+\section{Conclusion}
+It was shown that a naive queue algorithm could obviously not be used in a concurrent setting, 
+although someone has not to modify much code to get a correct queue.
+Besides some code for logging, no $atomic$ blocks were necessary, which shows that our model can be implemented on many platforms as no special instructions are needed (e.g. cas). 
+
+Promela is special in a way because it has a very different execution model in comparison to a traditional programming language. Spin needs some time to get used to it because it is not the most intuitive command-line tool. 
+
+
+\end{document}
