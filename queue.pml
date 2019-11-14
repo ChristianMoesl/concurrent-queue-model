@@ -29,26 +29,23 @@ init {
   }
 }
 
-byte producer = 1;
-byte consumer = 2;
+byte producer = 0;
+byte consumer = 1;
 
-bit x, y;
+bool wants_to_enter[2];
 byte turn = producer;
 
 inline enter_critical_section(caller) {
 #ifdef ENABLE_CRITICAL_SECTION
+  byte other;
   if
-  :: caller == producer ->
-    x = 1;
-    turn = consumer;
-    y == 0 || (turn == producer);
-
-  :: caller == consumer ->
-    y = 1;
-    turn = producer;
-    x == 0 || (turn == consumer);
-  :: else
+  :: caller == producer -> other = consumer
+  :: caller == consumer -> other = producer
   fi
+
+  wants_to_enter[caller] = true;
+  turn = other;
+  !wants_to_enter[other] || (turn == caller);
 #else
   skip
 #endif
@@ -56,13 +53,7 @@ inline enter_critical_section(caller) {
 
 inline leave_critical_section(caller) {
 #ifdef ENABLE_CRITICAL_SECTION
-  if
-  :: caller == producer ->
-    x = 0
-  :: caller == consumer ->
-    y = 0
-  :: else
-  fi
+  wants_to_enter[caller] = false;
 #else
   skip
 #endif
@@ -148,4 +139,5 @@ ltl no_item_lost {
 ltl order_preserved {
   always (dequeued_prev == dequeued_prev_prev + 1)
 }
+
 
